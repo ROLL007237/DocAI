@@ -1,0 +1,29 @@
+# Полный датасет — не выкладываем (тяжело)
+dataset/images/
+dataset/labels/
+dataset/labels_yolo/
+dataset/*.cache
+
+# Результаты обучения — не выкладываем всё, только графики (см. ниже)
+runs/
+
+# Результаты инференса — не выкладываем целиком, только примеры
+output/
+incoming/
+samples/
+samples_midv/
+midv500_data/
+
+# Виртуальное окружение и кэш
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Служебные файлы PyCharm
+.idea/
+
+# Логи
+*.log
+*.tmp
