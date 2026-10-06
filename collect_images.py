@@ -1,28 +1,35 @@
+"""Copy JPEG files from a dataset tree into one numbered image folder."""
+
+from __future__ import annotations
+
+import argparse
 import shutil
 from pathlib import Path
 
-# --- НАСТРОЙКИ ---
-# Замените этот путь на тот, где лежит распакованный датасет
-SOURCE_DIR = Path(r"C:\Users\Мария\Downloads\archive\CAN\HK888152")
+PROJECT_DIR = Path(__file__).resolve().parent
 
-# Куда складывать картинки (папка внутри вашего проекта)
-DEST_DIR = Path("dataset/images")
-DEST_DIR.mkdir(parents=True, exist_ok=True)
 
-# Счётчик
-count = 0
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", type=Path, help="root directory to search recursively")
+    parser.add_argument("--destination", type=Path, default=PROJECT_DIR / "dataset" / "images")
+    return parser.parse_args()
 
-# Рекурсивно обходим все файлы во всех вложенных папках
-for img_path in SOURCE_DIR.rglob("*.jpg"):
-    # Формируем новое имя: img_001.jpg, img_002.jpg и т.д.
-    count += 1
-    new_name = f"img_{count:03d}.jpg"  # :03d означает "три цифры с ведущими нулями"
-    dest_path = DEST_DIR / new_name
 
-    # Копируем файл
-    shutil.copy2(img_path, dest_path)
+def main() -> None:
+    args = parse_arguments()
+    source = args.source.expanduser().resolve()
+    destination = args.destination.expanduser().resolve()
+    if not source.is_dir():
+        raise NotADirectoryError(f"Source directory does not exist: {source}")
+    destination.mkdir(parents=True, exist_ok=True)
+    pictures = sorted(path for path in source.rglob("*") if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg"})
+    for index, image_path in enumerate(pictures, start=1):
+        target = destination / f"img_{index:03d}.jpg"
+        shutil.copy2(image_path, target)
+        print(f"{image_path} -> {target.name}")
+    print(f"Copied {len(pictures)} image(s) to {destination}")
 
-    # Печатаем, что скопировали (чтобы видеть прогресс)
-    print(f"{img_path.name}  ->  {new_name}")
 
-print(f"\nГотово! Скопировано {count} картинок в {DEST_DIR}")
+if __name__ == "__main__":
+    main()

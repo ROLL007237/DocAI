@@ -14,18 +14,54 @@
 - Tesseract OCR 5.5 — распознавание текста
 - OpenCV, Python 3.11
 
-## Установка
-Установите библиотеки:
+## Установка на macOS
 
-pip install ultralytics opencv-python pytesseract
+Нужен Python 3.11+ и Tesseract с английскими данными:
 
-Также нужен Tesseract OCR с английским языком: https://github.com/UB-Mannheim/tesseract/wiki
+```bash
+brew install tesseract
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+На Apple Silicon обучение по умолчанию использует ускорение Metal (`mps`). На Intel Mac укажите `--device cpu`.
 
 ## Запуск
-1. Положить документы в папку incoming/
-2. Запустить обработку
+1. Положите документы в папку `incoming/`.
+2. Запустите обработку:
+
+```bash
 python main.py
-3. Результаты появятся в output/
+```
+
+3. Результаты появятся в `output/`.
+
+Все пути можно переопределить, например:
+
+```bash
+python main.py --input ~/Documents/passports --output ~/Documents/passport-results
+```
+
+Если Tesseract не находится автоматически, передайте путь к исполняемому файлу:
+
+```bash
+python main.py --tesseract /opt/homebrew/bin/tesseract
+```
+
+## Вспомогательные команды
+
+Собрать изображения из распакованного датасета:
+
+```bash
+python collect_images.py /путь/к/датасету
+```
+
+Запустить обучение:
+
+```bash
+python train.py
+```
 
 ## Результат обработки
 Для каждого документа создаётся отдельная папка, внутри которой:
@@ -63,4 +99,3 @@ python main.py
 - examples/ — примеры результатов
 - training_results/ — графики обучения
 - README.md
-

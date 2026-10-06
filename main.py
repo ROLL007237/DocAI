@@ -1,120 +1,115 @@
+"""Extract document photo and MRZ areas with a trained YOLO model."""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
 import cv2
 import pytesseract
 from ultralytics import YOLO
-from pathlib import Path
-import shutil
 
-# --- НАСТРОЙКИ ---
-# Путь к Tesseract (ваш, проверенный)
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-# Путь к обученной модели
-MODEL_PATH = r"C:\DocumentCV\runs\detect\train\weights\best.pt"
-
-# Папки
-INPUT_DIR = Path("incoming")   # сюда кладём документы для обработки
-OUTPUT_DIR = Path("output")    # сюда скрипт сложит результаты
-
-# Создаём папки, если их нет
-INPUT_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-# Загружаем модель ОДИН РАЗ при запуске
-print("Загружаю модель...")
-model = YOLO(MODEL_PATH)
-print("Модель загружена.\n")
+PROJECT_DIR = Path(__file__).resolve().parent
+SUPPORTED_IMAGES = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
-def process_document(image_path: Path):
-    """Обрабатывает один документ и создаёт папку с результатами."""
-    doc_name = image_path.stem
-    doc_dir = OUTPUT_DIR / doc_name
-    doc_dir.mkdir(parents=True, exist_ok=True)
+@dataclass(frozen=True)
+class ProcessingPaths:
+    source: Path
+    destination: Path
 
-    # 1. Копируем исходный файл
-    shutil.copy2(image_path, doc_dir / image_path.name)
 
-    # 2. Читаем картинку
-    img = cv2.imread(str(image_path))
-    if img is None:
-        print(f"  [!] Не удалось прочитать: {image_path.name}")
-        return
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, default=PROJECT_DIR / "incoming", help="folder containing document images")
+    parser.add_argument("--output", type=Path, default=PROJECT_DIR / "output", help="folder for extracted results")
+    parser.add_argument("--model", type=Path, default=PROJECT_DIR / "model" / "best.pt", help="path to trained YOLO weights")
+    parser.add_argument("--tesseract", type=Path, help="path to tesseract executable; omit when it is in PATH")
+    return parser.parse_args()
 
-    # 3. Детекция через YOLO
-    results = model(str(image_path), verbose=False)
-    boxes = results[0].boxes
 
-    box_lines = []
-    found_photo = False
-    found_mrz = False
+def find_images(folder: Path) -> list[Path]:
+    return sorted(item for item in folder.iterdir() if item.is_file() and item.suffix.lower() in SUPPORTED_IMAGES)
 
-    if boxes is not None and len(boxes) > 0:
-        for box in boxes:
-            cls_id = int(box.cls[0])
-            cls_name = model.names[cls_id]
-            conf = float(box.conf[0])
-            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 
-            # Записываем в файл боксов
-            box_lines.append(f"{cls_name} {conf:.3f} {x1} {y1} {x2} {y2}")
+def crop_image(image, coordinates: tuple[int, int, int, int]):
+    height, width = image.shape[:2]
+    left, top, right, bottom = coordinates
+    left, right = max(0, left), min(width, right)
+    top, bottom = max(0, top), min(height, bottom)
+    return image[top:bottom, left:right]
 
-            # Вырезаем зону (с небольшим отступом на всякий случай)
-            crop = img[y1:y2, x1:x2]
-            if crop.size == 0:
+
+def recognize_mrz(mrz_image) -> str:
+    grayscale = cv2.cvtColor(mrz_image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(grayscale, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return pytesseract.image_to_string(binary, lang="eng", config="--psm 6").strip()
+
+
+class DocumentProcessor:
+    def __init__(self, model_path: Path, output_folder: Path) -> None:
+        if not model_path.is_file():
+            raise FileNotFoundError(f"Model weights not found: {model_path}")
+        self.detector = YOLO(model_path)
+        self.output_folder = output_folder
+
+    def process(self, source: Path) -> tuple[bool, bool]:
+        paths = ProcessingPaths(source=source, destination=self.output_folder / source.stem)
+        paths.destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(paths.source, paths.destination / paths.source.name)
+        image = cv2.imread(str(paths.source))
+        if image is None:
+            raise ValueError("OpenCV could not read the image")
+
+        photo_saved = mrz_saved = False
+        detections: list[str] = []
+        result = self.detector(str(paths.source), verbose=False)[0]
+        for box in (result.boxes if result.boxes is not None else ()):
+            class_id = int(box.cls[0])
+            label = self.detector.names[class_id]
+            confidence = float(box.conf[0])
+            coordinates = tuple(map(int, box.xyxy[0].tolist()))
+            detections.append(f"{label} {confidence:.3f} {' '.join(map(str, coordinates))}")
+            area = crop_image(image, coordinates)
+            if area.size == 0:
                 continue
+            if label == "photo":
+                cv2.imwrite(str(paths.destination / "face.jpg"), area)
+                photo_saved = True
+            elif label == "mrz":
+                cv2.imwrite(str(paths.destination / "mrz.jpg"), area)
+                (paths.destination / "mrz.txt").write_text(recognize_mrz(area), encoding="utf-8")
+                mrz_saved = True
 
-            if cls_name == "photo":
-                cv2.imwrite(str(doc_dir / "face.jpg"), crop)
-                found_photo = True
-
-            elif cls_name == "mrz":
-                cv2.imwrite(str(doc_dir / "mrz.jpg"), crop)
-
-                # 4. OCR по MRZ
-                gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                # Бинаризация для лучшего распознавания
-                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-                mrz_text = pytesseract.image_to_string(
-                    thresh,
-                    lang="eng",
-                    config="--psm 6"
-                )
-                with open(doc_dir / "mrz.txt", "w", encoding="utf-8") as f:
-                    f.write(mrz_text.strip())
-
-                found_mrz = True
-
-    # 5. Сохраняем файл с боксами
-    with open(doc_dir / "boxes.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(box_lines))
-
-    # 6. Отчёт
-    status = []
-    status.append("photo=OK" if found_photo else "photo=НЕТ")
-    status.append("mrz=OK" if found_mrz else "mrz=НЕТ")
-    print(f"  {image_path.name}: {', '.join(status)}")
+        (paths.destination / "boxes.txt").write_text("\n".join(detections), encoding="utf-8")
+        return photo_saved, mrz_saved
 
 
-def main():
-    # Ищем все картинки в папке incoming
-    extensions = ("*.jpg", "*.jpeg", "*.png", "*.bmp")
-    images = []
-    for ext in extensions:
-        images.extend(INPUT_DIR.glob(ext))
-
+def main() -> None:
+    args = parse_arguments()
+    if args.tesseract:
+        pytesseract.pytesseract.tesseract_cmd = str(args.tesseract.expanduser())
+    input_folder = args.input.expanduser().resolve()
+    output_folder = args.output.expanduser().resolve()
+    input_folder.mkdir(parents=True, exist_ok=True)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    images = find_images(input_folder)
     if not images:
-        print(f"В папке '{INPUT_DIR}' нет картинок.")
-        print("Положите туда файлы документов и запустите снова.")
+        print(f"No supported images in {input_folder}. Add files and run the command again.")
         return
 
-    print(f"Найдено файлов: {len(images)}\n")
-
-    for i, image_path in enumerate(images, 1):
-        print(f"[{i}/{len(images)}] {image_path.name}")
-        process_document(image_path)
-
-    print(f"\nГотово. Результаты в папке '{OUTPUT_DIR}'.")
+    print("Loading model…")
+    processor = DocumentProcessor(args.model.expanduser().resolve(), output_folder)
+    print(f"Processing {len(images)} image(s).")
+    for number, image_path in enumerate(images, start=1):
+        try:
+            photo, mrz = processor.process(image_path)
+            print(f"[{number}/{len(images)}] {image_path.name}: photo={'OK' if photo else 'missing'}, mrz={'OK' if mrz else 'missing'}")
+        except (OSError, ValueError, pytesseract.TesseractError, pytesseract.TesseractNotFoundError) as error:
+            print(f"[{number}/{len(images)}] {image_path.name}: failed — {error}")
+    print(f"Results: {output_folder}")
 
 
 if __name__ == "__main__":
